@@ -23,6 +23,5 @@ function doGet(req) {
 }
 
 function doPost(req) {
-  Logger.log(req);
   return app.listen("POST", req.pathInfo, req.postData);
 }
