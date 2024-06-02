@@ -1,139 +1,109 @@
-class AbstractBaseRequestObject {
-  constructor() {
-    if (this.constructor === AbstractBaseRequestObject) {
-      throw new Error("Illegal Instruction : Cannot instantiate an abstract class");
-    }
+function http_server(args) {
+  var JSONResponseBuilder = require("http-server-jsonresponsebuilder");
+
+  var HTTPSERVER_HAS_BEEN_INITIALIZED = false;
+  var HTTPSERVER_OPTIONS = {};
+  var HTTPSERVER_INSTANCE = null;
+
+  HTTPSERVER_OPTIONS["logger_prefix"] = "[HTTP] ";
+  if (typeof args === "object" && args.hasOwnProperty("indev")) HTTPSERVER_OPTIONS["indev"] = true;
+
+  var _tokenizePath = function(path) {
+    return path.split("/").filter(function(e) {
+      return e != "";
+    });
+  }
+  var _isPathSame = function(path1, path2) {
+    return path1.every(function(e, i) {
+      return e == path2[i];
+    });
   }
 
-  static onRequest(method, pararameter) {
-    throw new Error("Illegal Instruction : Method has not been implemented");
-  }
-}
+  class _HTTPServer {
+    constructor() {
+      if (HTTPSERVER_HAS_BEEN_INITIALIZED === true) throw new Error("Tried to initialize HTTP Server that has been initialized");
 
-class JSONResponseBuilder {
-  constructor() {
-    this.requestData = {};
-  }
-
-  setMessage(msg) {
-    this.requestData["message"] = msg;
-    return this;
-  }
-
-  // There is no way of returning a status code other than 200, so this is the best I could manage
-  setCustomStatusCode(code) {
-    this.requestData["status_code"] = code;
-    return this;
-  }
-
-  setNote(note) {
-    this.requestData["note"] = note;
-    return this;
-  }
-
-  build() {
-    if (!this.requestData.hasOwnProperty("status_code")) {
-      // FIXME: This could be considered a temporary fix, since there's no logging
-      this.requestData = {
-        "status_code": 500,
-        "message": "Request status code has not been set"
-      };
-      // TODO: possibly introduce logging this?
+      this.paths = {};
+      this.paths["GET"] = {};
+      this.paths["POST"] = {};
+      this.paths["Override"] = {};
     }
 
-    return JSON.stringify(this.requestData);
-  }
-}
-
-function normalizePath(path) {
-  return path.split("/").filter(function(e) {
-    return e != "";
-  });
-}
-
-function isPathSame(path1, path2) {
-  return path1.every(function(e, i) {
-    return e == path2[i];
-  });
-}
-
-class RequestManager {
-  static route(method, pathInfo, param) {
-    if (!pathInfo) {
-      // Set into an empty string, because otherwise it will break the paths that run in the root, like ({SCRIPT_ID}/exec). {SCRIPT_ID}/exec/ (with the trailing slash) still doesn't work because of some weird limitations with this platform?
-      pathInfo = "";
+    lGet(path, targetCallable) {
+      // Intentionally has no checks for the same routes for overriding function paths
+      this.paths["GET"][path] = targetCallable;
+    }
+    lPost(path, targetCallable) {
+      // Intentionally has no checks for the same routes for overriding function paths
+      this.paths["POST"][path] = targetCallable;
+    }
+    lOverride(statusCode, targetCallable) {
+      // Intentionally has no checks for the same routes for overriding function paths
+      this.paths["Override"][statusCode] = targetCallable;
     }
 
-    var normReqPath = normalizePath(pathInfo);
-    // Not the best, but it works. Ah well
-    for (var k in REQUEST_PATHS) {
-      if (!isPathSame(normReqPath, normalizePath(k))) {
-        continue;
+    listen(method, usrPath, param) {
+      try {
+        return this._listen(method, usrPath, param);
+      } catch (e) {
+        Logger.log(HTTPSERVER_OPTIONS["logger_prefix"] + "Returning status code 500 (" + e.message + "). Dumping stack trace...\n\n" + e.stack);
+        return HTTPSERVER_INSTANCE._returnStatusCode(500, (HTTPSERVER_OPTIONS["indev"] === true) ? "ERROR: " + e.message + ". See server logs for more detail" : "Internal server error");
       }
-
-      return REQUEST_PATHS[k].onRequest(method, param);
     }
-    
-    return ContentService.createTextOutput(new JSONResponseBuilder()
-      .setCustomStatusCode(404)
-      .setMessage("Endpoint invalid")
-      .build()
-    ).setMimeType(ContentService.MimeType.JSON);
+
+    _listen(method, usrPath, param) {
+      if (HTTPSERVER_OPTIONS["indev"] === true) var startReqTime = Date.now();
+
+      // Set into an empty string, because otherwise it will break the paths that run in the root, like ({SCRIPT_ID}/exec). {SCRIPT_ID}/exec/ (with the trailing slash) still doesn't work because of some weird limitations with this platform?
+      if (!usrPath) usrPath = "";
+
+      if (method !== "GET" && method !== "POST") throw new Error("Invalid method passed");
+
+      // preferred names
+      var _req = {};
+      if (method === "GET") {
+        _req.queryParam = param;
+      } else {
+        if (param === undefined) {
+          _req.body = null;
+        }
+        
+        // For now we only supported the JSON format, ah well
+        try {
+          _req.body = JSON.parse(param.contents)
+        } catch (e) {
+          _req.body = null; // Fake it not being there
+        };
+      }
+      _req.path = "/" + usrPath; // because if the URL is /exec/hello, it will only be "hello". This appends the "/" back so it looks nicer
+
+      // Normalize the paths into our workable format
+      var _normReqPath = _tokenizePath(usrPath);
+      for (var path in this.paths[method]) {
+        if (!_isPathSame(_normReqPath, _tokenizePath(path))) continue;
+        
+        // Call the function for the path, and method
+        return this.paths[method][path](_req);
+      }
+      
+      if (this.paths["Override"].hasOwnProperty(404)) {
+        return this.paths["Override"][404](_req);
+      }
+      return this._returnStatusCode(404, "Endpoint invalid");
+    }
+
+    _returnStatusCode(statusCode, msg) {
+      var _temp = new JSONResponseBuilder().setCustomStatusCode(statusCode);
+      if (msg !== undefined) _temp.setMessage(msg);
+
+      return ContentService.createTextOutput(_temp.build()).setMimeType(ContentService.MimeType.JSON);
+    }
   }
-}
 
-
-
-// Request target classes
-class Root extends AbstractBaseRequestObject {
-  static onRequest(method, pararameter) {
-    return ContentService.createTextOutput(new JSONResponseBuilder()
-      .setCustomStatusCode(200)
-      .setMessage("Hello. This is the default message of the PathRouterFramework. You could navigate to /nostatuscode, /nomessage, /nonote to test out this system.")
-      .build()
-    ).setMimeType(ContentService.MimeType.JSON);
+  return function() {
+    var _e = new _HTTPServer();
+    HTTPSERVER_HAS_BEEN_INITIALIZED = true;
+    HTTPSERVER_INSTANCE = _e;
+    return _e;
   }
-}
-
-class NoStatusCode extends AbstractBaseRequestObject {
-  static onRequest(method, pararameter) {
-    return ContentService.createTextOutput(new JSONResponseBuilder()
-      .setMessage("TestMessage")
-      .setNote("TestNote")
-      .build()
-    ).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-class NoMessage extends AbstractBaseRequestObject {
-  static onRequest(method, pararameter) {
-    return ContentService.createTextOutput(new JSONResponseBuilder()
-      .setCustomStatusCode(200)
-      .setNote("TestNote")
-      .build()
-    ).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-class NoNote extends AbstractBaseRequestObject {
-  static onRequest(method, pararameter) {
-    return ContentService.createTextOutput(new JSONResponseBuilder()
-      .setCustomStatusCode(200)
-      .setMessage("TestMessage")
-      .build()
-    ).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-var REQUEST_PATHS = {
-  "/": Root,
-  "/nostatuscode": NoStatusCode,
-  "/nomessage": NoMessage,
-  "/nonote": NoNote
-}
-
-
-
-function doGet(req) {
-  return RequestManager.route("GET", req.pathInfo, req.parameter);
 }
