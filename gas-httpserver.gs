@@ -14,6 +14,11 @@ function http_server(args) {
     });
   }
   var _isPathSame = function(path1, path2) {
+    // Lazy fix
+    if (Object.keys(path1).length !== Object.keys(path2).length) {
+      return false;
+    }
+    
     return path1.every(function(e, i) {
       return e == path2[i];
     });
